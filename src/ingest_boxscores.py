@@ -17,6 +17,23 @@ from pathlib import Path
 
 import pandas as pd
 from nba_api.stats.endpoints import ScoreboardV2, BoxScoreTraditionalV2
+from nba_api.stats.library.http import NBAStatsHTTP
+
+NBAStatsHTTP.headers.update({
+    "Host": "stats.nba.com",
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/119.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.nba.com/",
+    "Origin": "https://www.nba.com",
+    "Connection": "keep-alive",
+    "x-nba-stats-origin": "stats",
+    "x-nba-stats-token": "true",
+})
 
 from db import get_connection, init_db
 
