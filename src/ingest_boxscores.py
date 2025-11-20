@@ -163,6 +163,3 @@ def insert_boxscores(df_box: pd.DataFrame):
         sql = """
         INSERT INTO boxscores (
             game_id, player_id, team_id, opponent_team_id,
-           
-
-
