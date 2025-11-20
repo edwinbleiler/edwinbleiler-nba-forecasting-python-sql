@@ -19,7 +19,7 @@ import requests
 import pandas as pd
 
 # nba_api still reliable for boxscores
-from nba_api.stats.endpoints import BoxScoreTraditionalV2
+from nba_api.stats.endpoints import BoxScoreTraditionalV3
 from nba_api.stats.library.http import NBAStatsHTTP
 
 # Browser headers to bypass NBA Cloudflare protection
@@ -108,32 +108,51 @@ def fetch_games_for_date(date_str: str) -> pd.DataFrame:
 # Fetch boxscores using BoxScoreTraditionalV2
 # ---------------------------------------------------------------------
 def fetch_boxscores(game_id: str) -> pd.DataFrame:
-    """Fetch player boxscore stats for a single game."""
+    """
+    Fetch player boxscore stats for a single game using BoxScoreTraditionalV3
+    (2025+ correct schema).
+    """
 
-    box = BoxScoreTraditionalV2(game_id=game_id)
+    box = BoxScoreTraditionalV3(game_id=game_id)
     df = box.get_data_frames()[0]
 
-    df = df[[
-        "GAME_ID", "PLAYER_ID", "TEAM_ID", "OPPONENT_TEAM_ID",
-        "MIN", "PTS", "REB", "AST", "STL", "BLK", "TO",
-    ]].copy()
+    # New schema columns in TraditionalV3
+    expected_cols = [
+        "GAME_ID",
+        "PLAYER_ID",
+        "TEAM_ID",
+        "PTS",
+        "REB",
+        "AST",
+        "STL",
+        "BLK",
+        "TOV",       # turnovers renamed from TO → TOV
+        "MIN",
+        "MATCHUP_TEAM_ID",  # opponent team ID replaces OPPONENT_TEAM_ID
+    ]
 
-    df.rename(columns={
+    # Filter only the columns that exist (safe guard for small schema changes)
+    available_cols = [c for c in expected_cols if c in df.columns]
+    df = df[available_cols].copy()
+
+    # Rename to normalized names for your DB
+    rename_map = {
         "GAME_ID": "game_id",
         "PLAYER_ID": "player_id",
         "TEAM_ID": "team_id",
-        "OPPONENT_TEAM_ID": "opponent_team_id",
+        "MATCHUP_TEAM_ID": "opponent_team_id",
         "MIN": "minutes",
         "PTS": "points",
         "REB": "rebounds",
         "AST": "assists",
         "STL": "steals",
         "BLK": "blocks",
-        "TO": "turnovers",
-    }, inplace=True)
+        "TOV": "turnovers",
+    }
+
+    df.rename(columns=rename_map, inplace=True)
 
     return df
-
 
 # ---------------------------------------------------------------------
 # Database writes
