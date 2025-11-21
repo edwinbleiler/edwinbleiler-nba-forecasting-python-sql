@@ -2,9 +2,9 @@ name: NBA Daily Pipeline
 
 on:
   schedule:
-    - cron: "0 13 * * *"   # 8 AM EST
-    - cron: "0 20 * * *"   # 3 PM EST
-    - cron: "30 * * * *"   # every hour at :30, for last-minute checks
+    - cron: "0 13 * * *"   # 08:00 ET
+    - cron: "0 20 * * *"   # 15:00 ET
+    - cron: "30 * * * *"   # every hour at :30
   workflow_dispatch:
 
 jobs:
@@ -15,29 +15,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
           pip install -r requirements.txt
-
-      # PATCH: NBA API requires a browser User-Agent or GitHub Actions gets blocked
-      - name: Patch NBA API Headers
-        run: |
-          echo '### Applying NBA API header patch'
-          sed -i 's/"User-Agent": "python-requests"/"User-Agent": "Mozilla\/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit\/537.36 (KHTML, like Gecko) Chrome\/119 Safari\/537.36"/g' \
-            $(python -c "import nba_api, inspect; import os; print(os.path.dirname(inspect.getfile(nba_api)))")/stats/library/http.py
-
-      # Create persistent folders that the pipeline writes to
-      - name: Ensure data directories exist
-        run: |
-          mkdir -p data
-          mkdir -p outputs
-
+          
       # Run your full pipeline with retry logic
       - name: Run full pipeline with retry
         run: |
