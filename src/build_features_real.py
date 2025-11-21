@@ -1,185 +1,245 @@
-# src/build_features_real.py
-
-"""
-build_features_real.py
-
-Phase 4: Real feature engineering using actual boxscores from SQLite.
-
-- Loads games + boxscores
-- Computes DraftKings fantasy points
-- Computes rolling stats (last 5 / 10 / 20 games)
-- Computes DvP (defense vs player) at team level
-- Saves processed features for modeling & projections
-"""
-
-from pathlib import Path
-from datetime import datetime, timedelta
-
-from db import get_connection, init_db
-
 import pandas as pd
 import numpy as np
+from pathlib import Path
+from db import get_connection
+import math
 
-from db import get_connection, init_db
+# ---------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------
 
 BASE_DIR = Path(__file__).resolve().parents[1]
-PROCESSED_DIR = BASE_DIR / "data" / "processed"
-PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+STATIC_PATH = BASE_DIR / "data" / "static" / "team_locations.csv"
+FEATURE_OUTPUT = BASE_DIR / "outputs" / "features.csv"
 
+# Ensure directories exist
+STATIC_PATH.parent.mkdir(parents=True, exist_ok=True)
+FEATURE_OUTPUT.parent.mkdir(parents=True, exist_ok=True)
 
-def load_boxscores(last_n_seasons: int = 2) -> pd.DataFrame:
-    """Load boxscores joined with games from SQLite for last N seasons (by date)."""
-    init_db()
-    with get_connection() as conn:
-        df_games = pd.read_sql_query(
-            "SELECT game_id, season, game_date, home_team_id, away_team_id FROM games",
-            conn,
-            parse_dates=["game_date"],
-        )
-        df_box = pd.read_sql_query(
-            "SELECT game_id, player_id, team_id, opponent_team_id, "
-            "minutes, points, rebounds, assists, steals, blocks, turnovers "
-            "FROM boxscores",
-            conn,
-        )
+# ---------------------------------------------------------------------
+# 1. Utility Functions
+# ---------------------------------------------------------------------
 
-    df = df_box.merge(df_games, on="game_id", how="left")
+def clean_minutes(min_str):
+    """Convert weird NBA minutes formats to float."""
+    if min_str is None:
+        return 0.0
+    if isinstance(min_str, (int, float)):
+        return float(min_str)
+    if ":" in min_str:
+        m, s = min_str.split(":")
+        return float(m) + float(s)/60
+    try:
+        return float(min_str)
+    except:
+        return 0.0
 
-    # Filter last N seasons by date (approx by 2 calendar years)
-    cutoff_date = df["game_date"].max() - timedelta(days=365 * last_n_seasons)
-    df = df[df["game_date"] >= cutoff_date].copy()
+def haversine(lat1, lon1, lat2, lon2):
+    """Compute great-circle distance between two lat/lon points."""
+    R = 6371  # km
+    p = math.pi / 180
+    a = (0.5 - math.cos((lat2 - lat1)*p)/2
+         + math.cos(lat1*p) * math.cos(lat2*p)
+         * (1 - math.cos((lon2 - lon1)*p)) / 2)
+    return 2 * R * math.asin(math.sqrt(a))
 
-    # Drop rows with obviously invalid minutes
-    df = df[df["minutes"].notna()]
-    df = df[df["minutes"] > 0]
-
-    return df
-
-
-def compute_fantasy_points_dk(df: pd.DataFrame) -> pd.Series:
-    """
-    DraftKings NBA scoring:
-        PTS * 1
-        + REB * 1.25
-        + AST * 1.5
-        + STL * 2
-        + BLK * 2
-        - TOV * 0.5
-    """
+# Fantasy scoring (DK)
+def dk_fp(row):
     return (
-        df["points"] * 1.0
-        + df["rebounds"] * 1.25
-        + df["assists"] * 1.5
-        + df["steals"] * 2.0
-        + df["blocks"] * 2.0
-        - df["turnovers"] * 0.5
+        row["points"] +
+        1.25 * row["rebounds"] +
+        1.5 * row["assists"] +
+        2 * row["steals"] +
+        2 * row["blocks"] -
+        0.5 * row["turnovers"]
     )
 
+# ---------------------------------------------------------------------
+# 2. Load Team Location Data
+# ---------------------------------------------------------------------
 
-def add_rolling_features(df: pd.DataFrame, windows=(5, 10, 20)) -> pd.DataFrame:
-    """
-    Add rolling averages over several windows:
-    - fantasy points
-    - minutes
-    - points, rebounds, assists
-    """
+def load_team_locations():
+    if not STATIC_PATH.exists():
+        raise FileNotFoundError(
+            f"Missing team_locations.csv at {STATIC_PATH}. "
+            f"Create it using: data/static/team_locations.csv"
+        )
+    df = pd.read_csv(STATIC_PATH)
+    return df.set_index("team_id")
+
+# ---------------------------------------------------------------------
+# 3. Main Build Function
+# ---------------------------------------------------------------------
+
+def build_features():
+    print("Loading raw DB data...")
+
+    with get_connection() as conn:
+        df_games = pd.read_sql_query(
+            """
+            SELECT game_id, game_date, home_team_id, away_team_id
+            FROM games
+            ORDER BY game_date
+            """,
+            conn,
+            parse_dates=["game_date"]
+        )
+
+        df_box = pd.read_sql_query(
+            """
+            SELECT game_id, player_id, team_id, opponent_team_id,
+                   minutes, points, rebounds, assists, steals,
+                   blocks, turnovers
+            FROM boxscores
+            """,
+            conn
+        )
+
+    if df_games.empty or df_box.empty:
+        print("No data available. Run ingestion first.")
+        return
+
+    print("Cleaning data...")
+
+    # Clean minutes
+    df_box["minutes"] = df_box["minutes"].apply(clean_minutes)
+
+    # Add DK fantasy points
+    df_box["dk_fp"] = df_box.apply(dk_fp, axis=1)
+
+    # Merge game info
+    df = df_box.merge(df_games, on="game_id", how="left")
+
+    # -----------------------------------------------------------------
+    # 4. Compute Rest & Travel Features
+    # -----------------------------------------------------------------
+
+    print("Computing rest & travel...")
+
+    team_locs = load_team_locations()
+
+    # Last game date per team/player
+    df = df.sort_values(["player_id", "game_date"])
+
+    df["prev_game_date"] = df.groupby("player_id")["game_date"].shift(1)
+    df["days_rest"] = (df["game_date"] - df["prev_game_date"]).dt.days
+
+    # Rest flags
+    df["is_b2b"] = (df["days_rest"] == 1).astype(int)
+    df["is_3in4"] = (df["days_rest"].between(1, 2)).astype(int)
+
+    # Travel distance
+    def compute_travel(row):
+        team = row["team_id"]
+        prev = row.get("prev_game_id", None)
+        if pd.isna(prev):
+            return 0
+
+        # Home team or away?
+        game_row = df_games[df_games["game_id"] == row["game_id"]].iloc[0]
+        loc = "home" if game_row.home_team_id == team else "away"
+
+        prev_game_row = df_games[df_games["game_id"] == row["prev_game_id"]]
+        if prev_game_row.empty:
+            return 0
+        prev_game_row = prev_game_row.iloc[0]
+        prev_loc = "home" if prev_game_row.home_team_id == team else "away"
+
+        # Current coords
+        cur_team_id = team
+        cur_lat = team_locs.loc[cur_team_id, "lat"]
+        cur_lon = team_locs.loc[cur_team_id, "lon"]
+
+        prev_lat = cur_lat
+        prev_lon = cur_lon
+
+        # Real travel: from previous arena → today’s arena
+        if loc == "home":
+            cur_lat = team_locs.loc[team, "lat"]
+            cur_lon = team_locs.loc[team, "lon"]
+        else:
+            cur_lat = team_locs.loc[row["opponent_team_id"], "lat"]
+            cur_lon = team_locs.loc[row["opponent_team_id"], "lon"]
+
+        if prev_loc == "home":
+            prev_lat = team_locs.loc[team, "lat"]
+            prev_lon = team_locs.loc[team, "lon"]
+        else:
+            prev_lat = team_locs.loc[prev_game_row.opponent_team_id, "lat"]
+            prev_lon = team_locs.loc[prev_game_row.opponent_team_id, "lon"]
+
+        return haversine(prev_lat, prev_lon, cur_lat, cur_lon)
+
+    df["prev_game_id"] = df.groupby("player_id")["game_id"].shift(1)
+    df["travel_km"] = df.apply(compute_travel, axis=1)
+
+    # -----------------------------------------------------------------
+    # 5. Compute Rolling Averages
+    # -----------------------------------------------------------------
+
+    print("Computing rolling stats...")
 
     df = df.sort_values(["player_id", "game_date"])
 
-    for w in windows:
-        grouped = df.groupby("player_id")
+    roll_fields = ["minutes", "points", "rebounds", "assists",
+                   "steals", "blocks", "turnovers", "dk_fp"]
 
-        df[f"fppg_last_{w}"] = (
-            grouped["fantasy_points"].rolling(w).mean().reset_index(level=0, drop=True)
-        )
-        df[f"minutes_last_{w}"] = (
-            grouped["minutes"].rolling(w).mean().reset_index(level=0, drop=True)
-        )
-        df[f"points_last_{w}"] = (
-            grouped["points"].rolling(w).mean().reset_index(level=0, drop=True)
-        )
-        df[f"rebounds_last_{w}"] = (
-            grouped["rebounds"].rolling(w).mean().reset_index(level=0, drop=True)
-        )
-        df[f"assists_last_{w}"] = (
-            grouped["assists"].rolling(w).mean().reset_index(level=0, drop=True)
-        )
+    for w in [5, 10]:
+        for col in roll_fields:
+            df[f"{col}_roll{w}"] = (
+                df.groupby("player_id")[col]
+                .rolling(w, min_periods=1)
+                .mean()
+                .reset_index(level=0, drop=True)
+            )
 
-        # Consistency: inverse of rolling stddev
-        std = (
-            grouped["fantasy_points"]
-            .rolling(w)
-            .std()
-            .reset_index(level=0, drop=True)
-        )
-        df[f"consistency_last_{w}"] = 1 / (1 + std)
+    # -----------------------------------------------------------------
+    # 6. Opponent Allowed (DvP metrics)
+    # -----------------------------------------------------------------
 
-    # Usage proxy
-    df["usage_proxy"] = (df["points"] + df["rebounds"] + df["assists"]) / df["minutes"]
+    print("Computing opponent-allowed features...")
 
-    return df
+    opp = df.groupby(["opponent_team_id", "game_date"]).agg({
+        "points": "sum",
+        "rebounds": "sum",
+        "assists": "sum",
+        "steals": "sum",
+        "blocks": "sum",
+        "turnovers": "sum",
+        "dk_fp": "sum"
+    }).reset_index()
 
+    opp = opp.sort_values(["opponent_team_id", "game_date"])
 
-def compute_dvp(df: pd.DataFrame, window_games: int = 20) -> pd.DataFrame:
-    """
-    Compute Defense vs Player (team-only version v1):
-    - average fantasy points allowed by each opponent_team_id over last N games.
+    for w in [5, 10]:
+        for col in ["points", "rebounds", "assists", "steals", "blocks", "turnovers", "dk_fp"]:
+            opp[f"opp_{col}_allowed_roll{w}"] = (
+                opp.groupby("opponent_team_id")[col]
+                .rolling(w, min_periods=1)
+                .mean()
+                .reset_index(level=0, drop=True)
+            )
 
-    Later, when we wire positions, this will become DvP by position.
-    """
-    df = df.sort_values(["opponent_team_id", "game_date"])
-
-    df["fantasy_points_allowed"] = df["fantasy_points"]
-
-    grouped = df.groupby("opponent_team_id")
-    df["dvp_last_20"] = (
-        grouped["fantasy_points_allowed"]
-        .rolling(window_games)
-        .mean()
-        .reset_index(level=0, drop=True)
+    df = df.merge(
+        opp.drop(columns=["points", "rebounds", "assists",
+                          "steals", "blocks", "turnovers", "dk_fp"]),
+        on=["opponent_team_id", "game_date"],
+        how="left"
     )
 
-    dvp = (
-        df.groupby("opponent_team_id")["fantasy_points_allowed"]
-        .mean()
-        .reset_index()
-        .rename(
-            columns={
-                "opponent_team_id": "defense_team_id",
-                "fantasy_points_allowed": "dvp_overall_fp_allowed",
-            }
-        )
-    )
-    return df, dvp
+    # -----------------------------------------------------------------
+    # 7. Save Output
+    # -----------------------------------------------------------------
+
+    print(f"Saving features to {FEATURE_OUTPUT} ...")
+    df.to_csv(FEATURE_OUTPUT, index=False)
+
+    print("Feature build complete!")
 
 
-def main():
-    print("Loading boxscores + games from DB...")
-    df = load_boxscores(last_n_seasons=2)
-
-    if df.empty:
-        print("No data found. Run ingestion first.")
-        return
-
-    print("Computing fantasy points (DraftKings)...")
-    df["fantasy_points"] = compute_fantasy_points_dk(df)
-
-    print("Adding rolling features...")
-    df = add_rolling_features(df)
-
-    print("Computing DvP (team-level)...")
-    df, dvp = compute_dvp(df, window_games=20)
-
-    # Save player-level features
-    features_path = PROCESSED_DIR / "player_features_real.csv"
-    dvp_path = PROCESSED_DIR / "dvp_real.csv"
-
-    df.to_csv(features_path, index=False)
-    dvp.to_csv(dvp_path, index=False)
-
-    print(f"Saved player features to {features_path}")
-    print(f"Saved dvp metrics to {dvp_path}")
-
+# ---------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------
 
 if __name__ == "__main__":
-    main()
+    build_features()
