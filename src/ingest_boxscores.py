@@ -38,32 +38,39 @@ NBAStatsHTTP.headers.update({
 # ---------------------------------------------------------------------
 
 from nba_api.stats.endpoints import ScoreboardV3
+import pandas as pd
 
 def fetch_games_for_date(date_str: str) -> pd.DataFrame:
     """
-    Fetch all games scheduled for a given date using ScoreboardV3.
+    Fetches games for a given date using ScoreboardV3.
+    Reconstructs home/away teams from team matchup table.
     """
+
     sb = ScoreboardV3(game_date=date_str)
+    meta_df = sb.get_data_frames()[0]   # game metadata
+    teams_df = sb.get_data_frames()[1]  # team-by-team table (2 rows per game)
 
-    # V3 returns a list of dataframes; GameHeader is now under 'gameHeader'
-    df = sb.get_data_frames()[0]  # gameHeader
+    games = []
 
-    df = df[[
-        "gameId",
-        "gameDate",
-        "homeTeamId",
-        "awayTeamId",
-        "season"
-    ]].copy()
+    # teams_df rows come as: [home, away, home, away, ...]
+    for i in range(0, len(teams_df), 2):
+        t_home = teams_df.iloc[i]
+        t_away = teams_df.iloc[i + 1]
 
-    df.rename(columns={
-        "gameId": "game_id",
-        "gameDate": "game_date",
-        "homeTeamId": "home_team_id",
-        "awayTeamId": "away_team_id",
-    }, inplace=True)
+        game_id = t_home["gameId"]
 
-    return df
+        # get metadata for this game_id
+        meta_row = meta_df[meta_df["gameId"] == game_id].iloc[0]
+
+        games.append({
+            "game_id": game_id,
+            "season": None,  # ScoreboardV3 does not include season, can infer later
+            "game_date": meta_row["gameDate"],
+            "home_team_id": int(t_home["teamId"]),
+            "away_team_id": int(t_away["teamId"]),
+        })
+
+    return pd.DataFrame(games)
 
 
 
