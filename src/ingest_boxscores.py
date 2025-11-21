@@ -43,35 +43,33 @@ import pandas as pd
 def fetch_games_for_date(date_str: str) -> pd.DataFrame:
     """
     Fetches games for a given date using ScoreboardV3.
-    Reconstructs home/away teams from team matchup table.
+    Constructs home/away mapping from teams_df because metadata_df
+    does NOT contain gameId reliably.
     """
 
     sb = ScoreboardV3(game_date=date_str)
-    meta_df = sb.get_data_frames()[0]   # game metadata
-    teams_df = sb.get_data_frames()[1]  # team-by-team table (2 rows per game)
+
+    # DataFrame 0: metadata (one row per date) – does NOT contain gameId per team
+    meta_df = sb.get_data_frames()[0]
+
+    # DataFrame 1: team matchups – contains gameId, teamId, and comes in home/away pairs
+    teams_df = sb.get_data_frames()[1]
 
     games = []
 
-    # teams_df rows come as: [home, away, home, away, ...]
     for i in range(0, len(teams_df), 2):
-        t_home = teams_df.iloc[i]
-        t_away = teams_df.iloc[i + 1]
-
-        game_id = t_home["gameId"]
-
-        # get metadata for this game_id
-        meta_row = meta_df[meta_df["gameId"] == game_id].iloc[0]
+        home = teams_df.iloc[i]
+        away = teams_df.iloc[i + 1]
 
         games.append({
-            "game_id": game_id,
-            "season": None,  # ScoreboardV3 does not include season, can infer later
-            "game_date": meta_row["gameDate"],
-            "home_team_id": int(t_home["teamId"]),
-            "away_team_id": int(t_away["teamId"]),
+            "game_id": home["gameId"],
+            "season": None,  # missing in V3; can infer later
+            "game_date": meta_df["gameDate"].iloc[0],  # same date for all rows
+            "home_team_id": int(home["teamId"]),
+            "away_team_id": int(away["teamId"]),
         })
 
     return pd.DataFrame(games)
-
 
 
 def fetch_boxscores(game_id: str, home_team: int, away_team: int) -> pd.DataFrame:
