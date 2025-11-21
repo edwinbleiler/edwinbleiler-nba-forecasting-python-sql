@@ -4,7 +4,14 @@ on:
   schedule:
     - cron: "0 16 * * *"   # 11 AM EST
     - cron: "0 21 * * *"   # 4 PM EST
-  workflow_dispatch:        # manual run allowed
+  workflow_dispatch:
+    inputs:
+      game_id:
+        description: "Game ID for pre-lock pipeline run"
+        required: false
+      tipoff:
+        description: "Game tipoff time (UTC)"
+        required: false
 
 jobs:
   run-pipeline:
