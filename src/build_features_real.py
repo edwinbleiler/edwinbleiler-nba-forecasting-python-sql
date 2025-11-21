@@ -15,6 +15,8 @@ Phase 4: Real feature engineering using actual boxscores from SQLite.
 from pathlib import Path
 from datetime import datetime, timedelta
 
+from db import get_connection, init_db
+
 import pandas as pd
 import numpy as np
 
