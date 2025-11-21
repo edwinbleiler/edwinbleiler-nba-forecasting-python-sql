@@ -2,14 +2,15 @@ name: NBA Daily Pipeline
 
 on:
   schedule:
-    - cron: "0 13 * * *"
-    - cron: "0 20 * * *"
-    - cron: "30 * * * *"
+    - cron: "0 13 * * *"   # 8 AM ET
+    - cron: "0 20 * * *"   # 3 PM ET
+    - cron: "30 * * * *"   # every hour at :30
   workflow_dispatch:
 
 jobs:
   run:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -20,6 +21,7 @@ jobs:
         with:
           python-version: "3.11"
 
+      # Keep retry only for pip, which is flaky on GitHub's infra
       - name: Install dependencies (with retry)
         uses: nick-fields/retry@v3
         with:
@@ -28,7 +30,11 @@ jobs:
           command: |
             pip install -r requirements.txt
 
+      # Run your pipeline once; do NOT wrap this in the retry action
+      # and always skip yesterday backfill in CI so it can't hang pre-game
       - name: Run full pipeline
+        env:
+          SKIP_YESTERDAY_BACKFILL: "1"
         run: |
           python .github/scripts/run_full_pipeline.py
 
