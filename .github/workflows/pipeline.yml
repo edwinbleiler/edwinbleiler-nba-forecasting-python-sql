@@ -1,10 +1,31 @@
+Skip to content
+Navigation Menu
+edwinbleiler
+edwinbleiler-nba-forecasting-python-sql
+
+Type / to search
+Code
+Issues
+Pull requests
+Actions
+Projects
+Wiki
+Security
+Insights
+Settings
+NBA Daily Pipeline
+NBA Daily Pipeline #7
+Jobs
+Run details
+Workflow file for this run
+.github/workflows/pipeline.yml at dd8ebf0
 name: NBA Daily Pipeline
 
 on:
   schedule:
-    - cron: "0 13 * * *"   # 8 AM ET
-    - cron: "0 20 * * *"   # 3 PM ET
-    - cron: "30 * * * *"   # every hour at :30
+    - cron: "0 13 * * *"   # 8 AM EST
+    - cron: "0 20 * * *"   # 3 PM EST
+    - cron: "30 * * * *"   # every hour at :30, for last-minute checks
   workflow_dispatch:
 
 jobs:
@@ -15,27 +36,38 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install dependencies (with retry)
-        uses: nick-fields/retry@v3
-        with:
-          max_attempts: 3
-          timeout_minutes: 10
-          command: pip install -r requirements.txt
-
-      - name: Run full pipeline (with retry)
-        uses: nick-fields/retry@v3
-        with:
-          max_attempts: 3
-          timeout_minutes: 30
-          command: python .github/scripts/run_full_pipeline.py
-
-      - name: Upload outputs
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      # PATCH: NBA API requires a browser User-Agent or GitHub Actions gets blocked
+      - name: Patch NBA API Headers
+        run: |
+          echo '### Applying NBA API header patch'
+          sed -i 's/"User-Agent": "python-requests"/"User-Agent": "Mozilla\/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit\/537.36 (KHTML, like Gecko) Chrome\/119 Safari\/537.36"/g' \
+            $(python -c "import nba_api, inspect; import os; print(os.path.dirname(inspect.getfile(nba_api)))")/stats/library/http.py
+      # Create persistent folders that the pipeline writes to
+      - name: Ensure data directories exist
+        run: |
+          mkdir -p data
+          mkdir -p outputs
+      # Run your full pipeline with retry logic
+      - name: Run full pipeline with retry
+        run: |
+          echo "⚙️ Running full NBA pipeline..."
+          for i in {1..3}; do
+            python .github/scripts/run_full_pipeline.py && break
+            echo "⚠️ Attempt $i failed, retrying..."
+            sleep 10
+          done
+      # Upload artifacts
+      - name: Upload Outputs
         uses: actions/upload-artifact@v4
         with:
-          name: outputs
+          name: nba-outputs
           path: outputs/
