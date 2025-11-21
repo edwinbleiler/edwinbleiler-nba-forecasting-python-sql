@@ -2,9 +2,9 @@ name: NBA Daily Pipeline
 
 on:
   schedule:
-    - cron: "0 13 * * *"   # 8 AM ET
-    - cron: "0 20 * * *"   # 3 PM ET
-    - cron: "30 * * * *"   # every hour at :30
+    - cron: "0 13 * * *"
+    - cron: "0 20 * * *"
+    - cron: "30 * * * *"
   workflow_dispatch:
 
 jobs:
@@ -25,14 +25,12 @@ jobs:
         with:
           max_attempts: 3
           timeout_minutes: 10
-          command: pip install -r requirements.txt
+          command: |
+            pip install -r requirements.txt
 
-      - name: Run full pipeline (with retry)
-        uses: nick-fields/retry@v3
-        with:
-          max_attempts: 3
-          timeout_minutes: 30
-          command: python .github/scripts/run_full_pipeline.py
+      - name: Run full pipeline
+        run: |
+          python .github/scripts/run_full_pipeline.py
 
       - name: Upload outputs
         uses: actions/upload-artifact@v4
