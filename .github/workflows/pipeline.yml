@@ -1,17 +1,14 @@
 name: NBA Forecasting Pipeline
 
 on:
+  workflow_dispatch:        # allows manual testing
   schedule:
-    - cron: "0 16 * * *"   # 11 AM EST
-    - cron: "0 21 * * *"   # 4 PM EST
-  workflow_dispatch:
-    inputs:
-      game_id:
-        description: "Game ID for pre-lock pipeline run"
-        required: false
-      tipoff:
-        description: "Game tipoff time (UTC)"
-        required: false
+    # 11 AM EST → 16:00 UTC
+    - cron: "0 16 * * *"
+    # 4 PM EST → 21:00 UTC
+    - cron: "0 21 * * *"
+    # Overnight (8 AM UTC)
+    - cron: "0 8 * * *"
 
 jobs:
   run-pipeline:
@@ -19,53 +16,82 @@ jobs:
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Ensure dirs exist
+      - name: Ensure directories exist
         run: |
           mkdir -p data
           mkdir -p outputs
+          mkdir -p logs
 
-      - name: Determine yesterday
+      - name: Compute dates
         id: dates
-        run: echo "YESTERDAY=$(date -u -d 'yesterday' +%Y-%m-%d)" >> $GITHUB_ENV
+        run: |
+          echo "TODAY=$(date -u +%Y-%m-%d)" >> $GITHUB_ENV
+          echo "YESTERDAY=$(date -u -d 'yesterday' +%Y-%m-%d)" >> $GITHUB_ENV
 
-      - name: Run ingestion
-        run: python src/ingest_boxscores.py "$YESTERDAY"
+      - name: Log date info
+        run: |
+          echo "Running pipeline at $(date -u)"
+          echo "Today: $TODAY"
+          echo "Yesterday: $YESTERDAY"
 
-      - name: Build features
-        run: python src/build_features_real.py
+      - name: Ingest previous day
+        run: |
+          echo "Ingesting $YESTERDAY"
+          python src/ingest_boxscores.py $YESTERDAY | tee logs/ingest_$YESTERDAY.log
+
+      - name: Build feature set
+        run: |
+          echo "Building features..."
+          python src/build_features_real.py | tee logs/features_$TODAY.log
 
       - name: Build model dataset
-        run: python src/build_model_dataset.py
+        run: |
+          echo "Building model dataset..."
+          python src/build_model_dataset.py | tee logs/dataset_$TODAY.log
 
       - name: Train minutes model
-        run: python src/model_minutes.py
+        run: |
+          echo "Training minutes model..."
+          python src/model_minutes.py | tee logs/minutes_$TODAY.log
 
-      - - name: Upload Outputs
+      - name: Train stats model
+        run: |
+          echo "Training stats model..."
+          python src/model_stats.py | tee logs/stats_$TODAY.log
+
+      - name: Upload Outputs
         uses: actions/upload-artifact@v4
         with:
-        name: nba-forecasting-outputs
-        path: outputs/
-        if-no-files-found: warn
+          name: nba-forecasting-outputs
+          path: |
+            outputs/
+            logs/
+            data/nba_forecasting.db
+          if-no-files-found: warn
 
-      - name: Commit & Push updated outputs
+      - name: Commit & Push updated data
         if: github.ref == 'refs/heads/main'
         run: |
           git config --global user.email "action@github.com"
           git config --global user.name "GitHub Action"
-          git add outputs data
-          git commit -m "Automated pipeline update $(date -u)" || echo "No changes"
-          git push
+          git add outputs data logs || true
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Pipeline update $(date -u)"
+            git push
+          fi
