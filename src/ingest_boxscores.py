@@ -36,7 +36,6 @@ NBAStatsHTTP.headers.update({
 # ---------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------
-
 from nba_api.stats.endpoints import ScoreboardV3
 import pandas as pd
 
@@ -64,7 +63,7 @@ def fetch_games_for_date(date_str: str) -> pd.DataFrame:
         games.append({
             "game_id": home["gameId"],
             "season": None,  # missing in V3; can infer later
-            "game_date": meta_df["gameDate"].iloc[0],  # same date for all rows
+            "game_date": meta_df["gameDate"].iloc[0],  # same date for all games
             "home_team_id": int(home["teamId"]),
             "away_team_id": int(away["teamId"]),
         })
