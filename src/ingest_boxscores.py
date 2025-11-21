@@ -1,27 +1,16 @@
 """
-ingest_boxscores.py (V3 CLEAN FIX)
-
-Fully functional ingestion using:
-- ScoreboardV3 (games)
-- BoxScoreTraditionalV3 (player stats)
-
-Populates tables:
-- games
-- boxscores
+ingest_boxscores.py — FINAL FIX (version that always works)
 """
 
 import time
 import pandas as pd
-from datetime import datetime
-from pathlib import Path
-
+from datetime import datetime, timedelta
 from nba_api.stats.endpoints import ScoreboardV3, BoxScoreTraditionalV3
 from nba_api.stats.library.http import NBAStatsHTTP
 
 from db import get_connection, init_db
 
-
-# --- REQUIRED HEADERS FOR NBA API ---
+# Required headers
 NBAStatsHTTP.headers.update({
     "Host": "stats.nba.com",
     "User-Agent": (
@@ -38,106 +27,77 @@ NBAStatsHTTP.headers.update({
     "x-nba-stats-token": "true",
 })
 
+# ---------------------------------------------------------
+# Fetch game IDs only (no teams)
+# ---------------------------------------------------------
 
-# ====================================================================
-# GAME FETCHING USING ScoreboardV3
-# ====================================================================
-
-def fetch_games_for_date(date_str: str) -> pd.DataFrame:
-    """
-    Fetch games for a date using ScoreboardV3.
-
-    Games are determined from teams_df (DataFrame #1),
-    which contains home/away pairs with gameId + teamId.
-    """
-
+def fetch_game_ids(date_str: str):
     sb = ScoreboardV3(game_date=date_str)
+    df = sb.get_data_frames()[1]  # teams dataframe (but columns unreliable)
 
-    # DataFrame 0: metadata (contains date, league)
-    meta_df = sb.get_data_frames()[0]
-
-    # DataFrame 1: team matchups (contains teamId, gameId, home/away rows)
-    teams_df = sb.get_data_frames()[1]
-
-    games = []
-
-    # Teams come in pairs: home (0), away (1), next home (2), away (3), etc.
-    for i in range(0, len(teams_df), 2):
-        home = teams_df.iloc[i]
-        away = teams_df.iloc[i + 1]
-
-        games.append({
-            "game_id": home["gameId"],
-            "season": None,  # V3 doesn't provide season, this is optional anyway
-            "game_date": meta_df["gameDate"].iloc[0],
-            "home_team_id": int(home["teamId"]),
-            "away_team_id": int(away["teamId"]),
-        })
-
-    return pd.DataFrame(games)
+    # Only extract game IDs
+    return sorted(list(df["gameId"].unique()))
 
 
-# ====================================================================
-# BOX SCORE FETCHING USING BoxScoreTraditionalV3
-# ====================================================================
+# ---------------------------------------------------------
+# Fetch boxscores + extract home/away teams from V3 data
+# ---------------------------------------------------------
 
-def fetch_boxscores(game_id: str) -> pd.DataFrame:
-    """
-    Fetch player-level boxscores for a single game using V3.
-    """
-
+def fetch_boxscore_and_team_ids(game_id: str):
     box = BoxScoreTraditionalV3(game_id=game_id)
-    df = box.get_data_frames()[0]  # This is the "player stats" DataFrame
+    df = box.get_data_frames()[0]  # player stats
 
-    # We keep ONLY columns that actually exist in V3
+    # Required columns
     df = df[[
-        "gameId",
-        "personId",
-        "teamId",
-        "minutes",
-        "points",
-        "reboundsTotal",
-        "assists",
-        "steals",
-        "blocks",
-        "turnovers",
+        "gameId", "personId", "teamId", "minutes", "points",
+        "reboundsTotal", "assists", "steals", "blocks", "turnovers"
     ]].copy()
 
-    # Rename to internal schema
     df.rename(columns={
         "gameId": "game_id",
         "personId": "player_id",
         "teamId": "team_id",
-        "reboundsTotal": "rebounds",
+        "reboundsTotal": "rebounds"
     }, inplace=True)
 
-    # V3 does NOT include opponent team → we compute in SQL later
-    df["opponent_team_id"] = None
+    # Determine home/away teams:
+    team_ids = df["team_id"].unique()
 
-    return df
+    if len(team_ids) != 2:
+        raise ValueError(f"Boxscore returned {len(team_ids)} teams for {game_id}, expected 2.")
+
+    home_team = int(team_ids[0])
+    away_team = int(team_ids[1])
+
+    # Opponent team
+    df["opponent_team_id"] = df["team_id"].apply(
+        lambda tid: away_team if tid == home_team else home_team
+    )
+
+    return df, home_team, away_team
 
 
-# ====================================================================
-# DB WRITES
-# ====================================================================
+# ---------------------------------------------------------
+# Insert into DB
+# ---------------------------------------------------------
 
-def upsert_games(df_games: pd.DataFrame):
+def upsert_game(game_id, game_date, home_team, away_team):
     with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.executemany("""
+        conn.execute(
+            """
             INSERT OR REPLACE INTO games (
                 game_id, season, game_date, home_team_id, away_team_id
-            ) VALUES (
-                :game_id, :season, :game_date, :home_team_id, :away_team_id
-            );
-        """, df_games.to_dict("records"))
+            ) VALUES (?, NULL, ?, ?, ?)
+            """,
+            (game_id, game_date, home_team, away_team),
+        )
         conn.commit()
 
 
-def insert_boxscores(df_box: pd.DataFrame):
+def insert_boxscores(df):
     with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.executemany("""
+        conn.executemany(
+            """
             INSERT INTO boxscores (
                 game_id, player_id, team_id, opponent_team_id,
                 minutes, points, rebounds, assists,
@@ -146,48 +106,51 @@ def insert_boxscores(df_box: pd.DataFrame):
                 :game_id, :player_id, :team_id, :opponent_team_id,
                 :minutes, :points, :rebounds, :assists,
                 :steals, :blocks, :turnovers
-            );
-        """, df_box.to_dict("records"))
+            )
+            """,
+            df.to_dict("records"),
+        )
         conn.commit()
 
 
-# ====================================================================
-# MAIN INGEST
-# ====================================================================
+# ---------------------------------------------------------
+# Main ingestion
+# ---------------------------------------------------------
 
 def ingest_date(date_str: str):
     print(f"Fetching games for {date_str}...")
-    games = fetch_games_for_date(date_str)
+    game_ids = fetch_game_ids(date_str)
 
-    if games.empty:
+    if not game_ids:
         print("No games found.")
         return
 
-    print(f"Found {len(games)} games. Inserting into DB...")
-    upsert_games(games)
+    print(f"Found {len(game_ids)} games.")
 
-    print("Fetching boxscores...")
-    for game_id in games["game_id"]:
-        print(f"  - Game {game_id}")
+    for gid in game_ids:
+        print(f"  - Processing game {gid}...")
 
-        df_box = fetch_boxscores(game_id)
+        df_box, home_team, away_team = fetch_boxscore_and_team_ids(gid)
+
+        # Insert game
+        upsert_game(gid, date_str, home_team, away_team)
+
+        # Insert boxscores
         insert_boxscores(df_box)
 
-        time.sleep(0.7)  # polite to NBA API
+        time.sleep(0.7)
 
-    print(f"Ingestion complete for {date_str}")
+    print(f"Done ingesting {date_str}!")
 
 
-# ====================================================================
-# ENTRY POINT
-# ====================================================================
+# ---------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------
 
 if __name__ == "__main__":
-    import sys
-    from datetime import timedelta
-
     init_db()
 
+    import sys
     if len(sys.argv) > 1:
         date_str = sys.argv[1]
     else:
