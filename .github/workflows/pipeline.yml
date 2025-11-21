@@ -54,11 +54,12 @@ jobs:
       - name: Train minutes model
         run: python src/model_minutes.py
 
-      - name: Upload Outputs
-        uses: actions/upload-artifact@v3
+      - - name: Upload Outputs
+        uses: actions/upload-artifact@v4
         with:
-          name: nba-forecasting-outputs
-          path: outputs/
+        name: nba-forecasting-outputs
+        path: outputs/
+        if-no-files-found: warn
 
       - name: Commit & Push updated outputs
         if: github.ref == 'refs/heads/main'
