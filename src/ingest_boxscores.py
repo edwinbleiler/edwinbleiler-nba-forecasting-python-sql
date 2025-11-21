@@ -37,25 +37,34 @@ NBAStatsHTTP.headers.update({
 # Helpers
 # ---------------------------------------------------------------------
 
+from nba_api.stats.endpoints import ScoreboardV3
+
 def fetch_games_for_date(date_str: str) -> pd.DataFrame:
-    """Fetch all games scheduled for a given date."""
-    scoreboard = ScoreboardV2(game_date=date_str.replace("-", ""))
-    df = scoreboard.get_data_frames()[0]  # GameHeader
+    """
+    Fetch all games scheduled for a given date using ScoreboardV3.
+    """
+    sb = ScoreboardV3(game_date=date_str)
+
+    # V3 returns a list of dataframes; GameHeader is now under 'gameHeader'
+    df = sb.get_data_frames()[0]  # gameHeader
 
     df = df[[
-        "GAME_ID", "SEASON", "GAME_DATE_EST",
-        "HOME_TEAM_ID", "VISITOR_TEAM_ID"
+        "gameId",
+        "gameDate",
+        "homeTeamId",
+        "awayTeamId",
+        "season"
     ]].copy()
 
     df.rename(columns={
-        "GAME_ID": "game_id",
-        "SEASON": "season",
-        "GAME_DATE_EST": "game_date",
-        "HOME_TEAM_ID": "home_team_id",
-        "VISITOR_TEAM_ID": "away_team_id",
+        "gameId": "game_id",
+        "gameDate": "game_date",
+        "homeTeamId": "home_team_id",
+        "awayTeamId": "away_team_id",
     }, inplace=True)
 
     return df
+
 
 
 def fetch_boxscores(game_id: str, home_team: int, away_team: int) -> pd.DataFrame:
