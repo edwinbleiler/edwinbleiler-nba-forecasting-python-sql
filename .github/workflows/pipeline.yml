@@ -2,8 +2,9 @@ name: NBA Forecasting Pipeline
 
 on:
   schedule:
-    - cron: "0 8 * * *"   # Runs every day at 8:00 UTC (~3AM EST)
-  workflow_dispatch:        # allows manual run
+    - cron: "0 16 * * *"   # 11 AM EST
+    - cron: "0 21 * * *"   # 4 PM EST
+  workflow_dispatch:        # manual run allowed
 
 jobs:
   run-pipeline:
@@ -22,49 +23,41 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
+          pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Create data and outputs directories if missing
+      - name: Ensure dirs exist
         run: |
           mkdir -p data
           mkdir -p outputs
 
-      - name: Determine yesterday's date
+      - name: Determine yesterday
         id: dates
-        run: |
-          echo "YESTERDAY=$(date -u -d 'yesterday' +%Y-%m-%d)" >> $GITHUB_ENV
+        run: echo "YESTERDAY=$(date -u -d 'yesterday' +%Y-%m-%d)" >> $GITHUB_ENV
 
-      - name: Run ingestion for yesterday
-        run: |
-          echo "Ingesting $YESTERDAY"
-          python src/ingest_boxscores.py $YESTERDAY
+      - name: Run ingestion
+        run: python src/ingest_boxscores.py "$YESTERDAY"
 
-      - name: Build feature set
-        run: |
-          python src/build_features_real.py
+      - name: Build features
+        run: python src/build_features_real.py
 
       - name: Build model dataset
-        run: |
-          python src/build_model_dataset.py
+        run: python src/build_model_dataset.py
 
       - name: Train minutes model
-        run: |
-          python src/model_minutes.py
+        run: python src/model_minutes.py
 
-      # Upload artifacts for download
       - name: Upload Outputs
         uses: actions/upload-artifact@v3
         with:
           name: nba-forecasting-outputs
           path: outputs/
 
-      # OPTIONAL: automatically commit new data back to repo
       - name: Commit & Push updated outputs
         if: github.ref == 'refs/heads/main'
         run: |
           git config --global user.email "action@github.com"
           git config --global user.name "GitHub Action"
           git add outputs data
-          git commit -m "Automated pipeline update $(date -u)"
+          git commit -m "Automated pipeline update $(date -u)" || echo "No changes"
           git push
